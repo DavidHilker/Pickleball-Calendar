@@ -31,37 +31,32 @@ def add_event(title, start, end, source):
     calendar.events.add(e)
 
 async def scrape_courtreserve(page, org_id):
-
-    url = f"https://app.courtreserve.com/Online/Calendar/Events/{org_id}/Month"
-
-    await page.goto(url)
-
-    await page.wait_for_selector(".fc-event")
-
-    events = await page.query_selector_all(".fc-event")
-
-    for ev in events:
-
-        title = (await ev.inner_text()).strip()
-
-        start_raw = await ev.get_attribute("data-start")
-
-        end_raw = await ev.get_attribute("data-end")
-
-        if not start_raw:
-
-            continue
-
-        start = datetime.fromisoformat(start_raw)
-
-        end = datetime.fromisoformat(end_raw) if end_raw else start
-
-        add_event(title, start, end, f"CR {org_id}")
+   url = f"https://app.courtreserve.com/Online/Calendar/Events/{org_id}/Month"
+   await page.goto(url, wait_until="networkidle")  # wait until network requests are done
+   # Give extra time for JS calendar to populate
+   await page.wait_for_timeout(5000)  # wait 5 seconds
+   # Extract events directly from JavaScript calendar object
+   events_data = await page.evaluate("""
+       () => {
+           const events = window.FullCalendar?.getCalendar?.()?.getEvents?.() || [];
+           return events.map(e => ({
+               title: e.title,
+               start: e.start?.toISOString(),
+               end: e.end?.toISOString()
+           }));
+       }
+   """)
+   for e in events_data:
+       if not e["start"]:
+           continue
+       start = datetime.fromisoformat(e["start"])
+       end = datetime.fromisoformat(e["end"]) if e["end"] else start
+       add_event(e["title"], start, end, f"CR {org_id}")
 
 async def scrape_mvp(page):
 
     await page.goto(MVP_URL)
-
+    await page.wait_for_timeout(5000)  # wait 5 seconds
     await page.wait_for_selector(".schedule-item")
 
     items = await page.query_selector_all(".schedule-item")
