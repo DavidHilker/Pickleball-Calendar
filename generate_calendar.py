@@ -5,6 +5,7 @@ from ics import Calendar, Event
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+COURTRESERVE_ORG_Names = {"9314":"All In BC", "16119": "DnD"}
 COURTRESERVE_ORGS = ["9314", "16119"]
 MVP_URL = "https://mvp.clubautomation.com/calendar/event-info?id=1070097&style=1&isFrame=2"
 LOCAL_TZ = ZoneInfo("America/New_York")
@@ -12,7 +13,7 @@ LOCAL_TZ = ZoneInfo("America/New_York")
 calendar = Calendar()
 
 
-def add_event(title, start, end, source):
+def add_event(title, start, end, COURTRESERVE_ORG_NAMES.get(org_id, f"CR {org_id}"))
     if "open play" not in title.lower():
         return
     e = Event()
