@@ -267,6 +267,9 @@ async def main():
     print(f"\n-- Writing calendar.ics ({total} events) --")
     with open("calendar.ics", "w", encoding="utf-8") as f:
         f.writelines(calendar)
-    print("Done​​​​​​​​​​​​​​​​
+    print("Done.")
 
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
