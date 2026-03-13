@@ -13,7 +13,7 @@ LOCAL_TZ = ZoneInfo("America/New_York")
 calendar = Calendar()
 
 
-def add_event(title, start, end, COURTRESERVE_ORG_NAMES.get(org_id, f"CR {org_id}"))
+def add_event(title, start, end, source):
     if "open play" not in title.lower():
         return
     e = Event()
@@ -110,7 +110,7 @@ async def scrape_courtreserve(page, org_id):
         if start.date() < today:
             continue
 
-        add_event(title, start, end, f"CR {org_id}")
+        add_event(title, start, end, COURTRESERVE_ORG_NAMES.get(org_id, f"CR {org_id}"))
         added += 1
 
     print(f"  Open Play events added: {added}")
