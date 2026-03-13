@@ -1,5 +1,6 @@
 import asyncio
 import re
+import json
 from playwright.async_api import async_playwright
 from ics import Calendar, Event
 from datetime import datetime, timedelta
@@ -40,106 +41,90 @@ async def scrape_courtreserve(page, org_id):
 
     today = datetime.now(tz=LOCAL_TZ).date()
     end_date = today + timedelta(days=DAYS_FORWARD)
-
-    # Try hitting the JSON feed endpoint directly
-    json_url = (
-        f"https://app.courtreserve.com/Online/Events/GetEventsList/{org_id}"
-        f"?startDate={today.strftime('%Y-%m-%d')}"
-        f"&endDate={end_date.strftime('%Y-%m-%d')}"
-    )
-    print(f"  Trying direct JSON URL: {json_url}")
-
     captured_events = []
 
-    try:
-        response = await page.goto(json_url, wait_until="networkidle", timeout=15000)
-        content_type = response.headers.get("content-type", "")
-        body = await page.content()
-        print(f"  Content-Type: {content_type}")
-        print(f"  Body preview: {body[:500]}")
-
-        if "json" in content_type:
-            import json
-            data = json.loads(await page.evaluate("() => document.body.innerText"))
+    # Intercept the XHR that FullCalendar fires to populate events
+    async def handle_response(response):
+        url = response.url
+        if "courtreserve.com" not in url:
+            return
+        ct = response.headers.get("content-type", "")
+        if "json" not in ct:
+            return
+        try:
+            data = await response.json()
+            print(f"  JSON response from: {url}")
+            print(f"  Type: {type(data)}, preview: {str(data)[:300]}")
             if isinstance(data, list):
-                captured_events = data
+                captured_events.extend(data)
             elif isinstance(data, dict):
-                for key in ("data", "events", "Events", "items"):
+                for key in ("data", "events", "Events", "items", "Data"):
                     if key in data and isinstance(data[key], list):
-                        captured_events = data[key]
+                        captured_events.extend(data[key])
                         break
-    except Exception as exc:
-        print(f"  Direct JSON failed: {exc}")
+        except Exception as exc:
+            print(f"  JSON parse error: {exc}")
 
-    # Fall back to loading the calendar page and dumping its HTML for debugging
+    page.on("response", handle_response)
+
+    # Load the calendar page and wait generously for JS to fire
+    url = f"https://app.courtreserve.com/Online/Calendar/Events/{org_id}/Month"
+    await page.goto(url, wait_until="networkidle", timeout=30000)
+    await page.wait_for_timeout(8000)
+
+    # Click next month twice to load more events
+    for i in range(2):
+        try:
+            btn = page.locator("button.fc-next-button").first
+            await btn.wait_for(state="visible", timeout=5000)
+            await btn.click()
+            await page.wait_for_timeout(3000)
+            print(f"  Clicked next month ({i+1})")
+        except Exception:
+            print(f"  Could not click next month ({i+1})")
+            break
+
+    page.remove_listener("response", handle_response)
+    print(f"  Total events from XHR: {len(captured_events)}")
+
+    # If XHR gave nothing, try reading rendered event elements directly from the DOM
     if not captured_events:
-        print(f"  Falling back to calendar page for org {org_id}")
-        base_url = f"https://app.courtreserve.com/Online/Calendar/Events/{org_id}/Month"
-        await page.goto(base_url, wait_until="networkidle", timeout=30000)
-        await page.wait_for_timeout(5000)
-
-        # Dump page HTML so we can inspect the structure
-        html = await page.content()
-        print(f"  PAGE HTML PREVIEW (first 2000 chars):\n{html[:2000]}")
-
-        # Try to read events from every possible FullCalendar pattern
-        captured_events = await page.evaluate("""
+        print("  Trying DOM event elements...")
+        dom_events = await page.evaluate("""
             () => {
-                try {
-                    // Pattern 1: FC v5/v6 on element
-                    const fcEl = document.querySelector('.fc');
-                    if (fcEl && fcEl._calendar) {
-                        return fcEl._calendar.getEvents().map(ev => ({
-                            title: ev.title,
-                            start: ev.start ? ev.start.toISOString() : null,
-                            end: ev.end ? ev.end.toISOString() : null,
-                        }));
-                    }
-                    // Pattern 2: global calendar instance
-                    if (window.calendar && window.calendar.getEvents) {
-                        return window.calendar.getEvents().map(ev => ({
-                            title: ev.title,
-                            start: ev.start ? ev.start.toISOString() : null,
-                            end: ev.end ? ev.end.toISOString() : null,
-                        }));
-                    }
-                    // Pattern 3: scan all jQuery data for FC instance
-                    const allEls = document.querySelectorAll('[id],[class]');
-                    for (const el of allEls) {
-                        const keys = Object.keys(el);
-                        for (const k of keys) {
-                            if (k.startsWith('jQuery') && el[k].fullCalendar) {
-                                const evs = el[k].fullCalendar.clientEvents();
-                                return evs.map(ev => ({
-                                    title: ev.title,
-                                    start: ev.start ? ev.start.toISOString() : null,
-                                    end: ev.end ? ev.end.toISOString() : null,
-                                }));
-                            }
-                        }
-                    }
-                    return [];
-                } catch(e) { return ["ERROR: " + e.toString()]; }
+                const results = [];
+                // FullCalendar renders events as <a class="fc-event"> elements
+                document.querySelectorAll('a.fc-event, .fc-event').forEach(el => {
+                    const titleEl = el.querySelector('.fc-event-title, .fc-title, .fc-event-main');
+                    const title = titleEl ? titleEl.innerText.trim() : el.innerText.trim();
+                    // The event time is stored in the parent fc-timegrid-event or as data attributes
+                    const start = el.getAttribute('data-start') ||
+                                  el.closest('[data-start]')?.getAttribute('data-start') || '';
+                    const end   = el.getAttribute('data-end') ||
+                                  el.closest('[data-end]')?.getAttribute('data-end') || '';
+                    if (title) results.push({ title, start, end });
+                });
+                return results;
             }
         """)
-
-    print(f"  Events captured: {len(captured_events)}")
-    if captured_events:
-        print(f"  First event sample: {captured_events[0]}")
+        print(f"  DOM events found: {len(dom_events)}")
+        if dom_events:
+            print(f"  Sample: {dom_events[0]}")
+        captured_events = dom_events
 
     for ev in captured_events:
         if not isinstance(ev, dict):
             continue
         title = (ev.get("title") or ev.get("Title") or ev.get("name") or "").strip()
         start_raw = ev.get("start") or ev.get("Start") or ev.get("startTime") or ""
-        end_raw = ev.get("end") or ev.get("End") or ev.get("endTime") or ""
+        end_raw   = ev.get("end")   or ev.get("End")   or ev.get("endTime")   or ""
 
         if not title or not start_raw:
             continue
 
         try:
-            start = _parse_courtreserve_dt(start_raw)
-            end = _parse_courtreserve_dt(end_raw) if end_raw else start + timedelta(hours=1)
+            start = _parse_courtreserve_dt(str(start_raw))
+            end   = _parse_courtreserve_dt(str(end_raw)) if end_raw else start + timedelta(hours=1)
         except (ValueError, TypeError):
             continue
 
@@ -150,141 +135,89 @@ async def scrape_courtreserve(page, org_id):
 
 
 async def scrape_mvp(page):
+    """
+    MVP ClubAutomation page structure (confirmed from debug output):
+
+    The entire schedule lives in ONE element matching [class*='schedule'].
+    Inside it, each class is a .block div containing:
+      - .row_link  -> class name
+      - .row_text divs -> facility, department, days of week
+
+    This page shows recurring classes (not dated events), so we generate
+    one event per upcoming matching day-of-week within DAYS_FORWARD.
+    """
     print("\n-- MVP Gym (ClubAutomation) --")
 
     await page.goto(MVP_URL, wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_timeout(5000)
 
-    # Dump full HTML so we can see the real structure
-    html = await page.content()
-    print(f"  MVP PAGE HTML PREVIEW (first 3000 chars):\n{html[:3000]}")
+    blocks = await page.query_selector_all(".block")
+    print(f"  Total .block elements: {len(blocks)}")
 
-    # Also print ALL unique class names found on the page to identify selectors
-    all_classes = await page.evaluate("""
-        () => {
-            const classes = new Set();
-            document.querySelectorAll('*').forEach(el => {
-                el.classList.forEach(c => classes.add(c));
-            });
-            return Array.from(classes).slice(0, 100);
-        }
-    """)
-    print(f"  Classes found on page: {all_classes}")
+    today = datetime.now(tz=LOCAL_TZ).date()
+    end_date = today + timedelta(days=DAYS_FORWARD)
 
-    selectors_to_try = [
-        ".schedule-item",
-        ".class-item",
-        ".group-class",
-        "li.event",
-        ".fc-event",
-        ".program-item",
-        ".class-block",
-        "[class*='schedule']",
-        "[class*='class-row']",
-        "[class*='event-item']",
-    ]
+    # Map day abbreviations to Python weekday numbers (Mon=0 ... Sun=6)
+    DAY_MAP = {
+        "mon": 0, "tue": 1, "wed": 2, "thu": 3,
+        "fri": 4, "sat": 5, "sun": 6
+    }
 
-    loaded_selector = None
-    for sel in selectors_to_try:
-        items = await page.query_selector_all(sel)
-        if items:
-            loaded_selector = sel
-            print(f"  Found {len(items)} items with selector: {sel}")
-            # Print the HTML of the first item so we know its structure
-            first_html = await items[0].inner_html()
-            print(f"  First item HTML: {first_html[:500]}")
-            break
+    for block in blocks:
+        # Skip header row (it has no .row_link with actual text)
+        link_el = await block.query_selector(".row_link")
+        if not link_el:
+            continue
+        title = (await link_el.inner_text()).strip()
 
-    if loaded_selector is None:
-        print("  WARNING: No items matched any selector.")
-        return
-
-    items = await page.query_selector_all(loaded_selector)
-    today = datetime.now(tz=LOCAL_TZ)
-
-    for ev in items:
-        # Print the full text of each item for debugging
-        full_text = (await ev.inner_text()).strip()
-        print(f"  Item text: {full_text[:200]}")
-
-        title = ""
-        for title_sel in [".title", ".class-name", ".event-name", "h3", "h4", ".name", "strong", "b"]:
-            el = await ev.query_selector(title_sel)
-            if el:
-                title = (await el.inner_text()).strip()
-                break
-
-        if not title:
-            # Use the full text as title if no specific element found
-            title = full_text.split("\n")[0].strip()
-
-        if not title or "open play" not in title.lower():
+        if "open play" not in title.lower():
             continue
 
-        facility = ""
-        for fac_sel in [".location", ".facility", ".gym", ".club-name", ".venue", ".studio"]:
-            el = await ev.query_selector(fac_sel)
-            if el:
-                facility = (await el.inner_text()).strip()
-                break
+        # .row_text divs: [0]=facility, [1]=department, [2]=days of week
+        row_texts = await block.query_selector_all(".row_text")
+        texts = [(await el.inner_text()).strip() for el in row_texts]
+        print(f"  Matched: '{title}' | row_texts: {texts}")
 
-        print(f"  Matched Open Play - facility: '{facility}'")
+        if len(texts) < 1:
+            continue
+
+        facility = texts[0] if len(texts) > 0 else ""
+        days_str = texts[2] if len(texts) > 2 else ""
 
         if facility and "sportsplex" not in facility.lower():
             continue
 
-        event_date = today.date()
-        for date_sel in [".date", ".event-date", ".day", "time", "[datetime]", ".when"]:
-            el = await ev.query_selector(date_sel)
-            if el:
-                raw_date = (
-                    await el.get_attribute("datetime")
-                    or await el.inner_text()
+        if not days_str:
+            print(f"  WARNING: no days found for '{title}'")
+            continue
+
+        # Parse day abbreviations e.g. "Fri, Mon, Tue"
+        day_nums = []
+        for part in re.split(r"[,\s]+", days_str):
+            key = part.strip().lower()[:3]
+            if key in DAY_MAP:
+                day_nums.append(DAY_MAP[key])
+
+        if not day_nums:
+            print(f"  WARNING: could not parse days '{days_str}'")
+            continue
+
+        # We don't have a time on this view — default to 8:00-9:00 AM
+        # as a placeholder (update if you find a time source)
+        DEFAULT_START_HOUR = 8
+        DEFAULT_DURATION = timedelta(hours=1)
+
+        # Generate one event for each matching weekday in the next 30 days
+        current = today
+        while current <= end_date:
+            if current.weekday() in day_nums:
+                start = datetime(
+                    current.year, current.month, current.day,
+                    DEFAULT_START_HOUR, 0, tzinfo=LOCAL_TZ
                 )
-                if raw_date:
-                    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y"]:
-                        try:
-                            event_date = datetime.strptime(raw_date.strip(), fmt).date()
-                            break
-                        except ValueError:
-                            continue
-                break
-
-        time_text = ""
-        for time_sel in [".time", ".event-time", ".hours", ".schedule-time", ".when", ".start-time"]:
-            el = await ev.query_selector(time_sel)
-            if el:
-                time_text = (await el.inner_text()).strip()
-                break
-
-        if not time_text:
-            print(f"  WARNING: no time found for '{title}'")
-            continue
-
-        time_text = time_text.replace("\u2013", "-").replace("\u2014", "-")
-        time_text = re.sub(r"\s*(AM|PM|am|pm)\s*", lambda m: m.group(1).upper(), time_text)
-        parts = [p.strip() for p in time_text.split("-")]
-        if len(parts) != 2:
-            continue
-
-        start_str, end_str = parts
-        if not re.search(r"[AaPp][Mm]", start_str):
-            am_pm = re.search(r"(AM|PM)", end_str)
-            if am_pm:
-                start_str += am_pm.group(1)
-
-        try:
-            start = datetime.strptime(
-                f"{event_date} {start_str}", "%Y-%m-%d %I:%M%p"
-            ).replace(tzinfo=LOCAL_TZ)
-            end = datetime.strptime(
-                f"{event_date} {end_str}", "%Y-%m-%d %I:%M%p"
-            ).replace(tzinfo=LOCAL_TZ)
-        except ValueError:
-            print(f"  WARNING: Could not parse time '{time_text}' for '{title}'")
-            continue
-
-        add_event(title, start, end, "MVP Sportsplex")
+                end = start + DEFAULT_DURATION
+                add_event(title, start, end, "MVP Sportsplex")
+            current += timedelta(days=1)
 
 
 async def main():
