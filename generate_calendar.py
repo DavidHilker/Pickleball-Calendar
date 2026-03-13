@@ -243,7 +243,8 @@ async def main():
             await scrape_mvp(page)
         except Exception as exc:
             print(f"  FAILED MVP: {exc}")
-await debug_mvp_events_page(page)
+
+        await debug_mvp_events_page(page) 
         await browser.close()
 
     total = len(calendar.events)
@@ -255,6 +256,7 @@ await debug_mvp_events_page(page)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 async def debug_mvp_events_page(page):
     print("\n-- DEBUG: MVP Event Info Page --")
@@ -299,4 +301,5 @@ async def debug_mvp_events_page(page):
     print(f"  Date/time elements found:")
     for el in date_time_texts:
         print(f"    <{el['tag']} class='{el['class']}'> {el['text']}")
+
 
