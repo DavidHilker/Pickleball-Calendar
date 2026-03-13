@@ -2,17 +2,21 @@ name: update-calendar
 
 on:
 
-  workflow_dispatch:  # allows manual runs
+  workflow_dispatch:
 
   schedule:
 
-    - cron: "0 7 * * *"  # daily at 7:00 UTC
+    - cron: "0 7 * * *"
 
 jobs:
 
   build:
 
     runs-on: ubuntu-latest
+
+    permissions:
+
+      contents: write
 
     steps:
 
@@ -34,9 +38,7 @@ jobs:
 
           pip install -r requirements.txt
 
-          pip install playwright
-
-          playwright install
+          playwright install chromium --with-deps
 
       - name: Run scraper
 
