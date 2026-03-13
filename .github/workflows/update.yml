@@ -1,0 +1,21 @@
+name: update-calendar
+on:
+ schedule:
+   - cron: "0 * * * *"
+jobs:
+ build:
+   runs-on: ubuntu-latest
+   steps:
+     - uses: actions/checkout@v3
+     - uses: actions/setup-python@v4
+       with:
+         python-version: "3.11"
+     - run: pip install -r requirements.txt
+     - run: python generate_calendar.py
+     - name: commit calendar
+       run: |
+         git config --global user.name "bot"
+         git config --global user.email "bot@example.com"
+         git add calendar.ics
+         git commit -m "update calendar" || exit 0
+         git push
