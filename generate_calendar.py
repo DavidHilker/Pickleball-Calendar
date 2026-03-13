@@ -243,7 +243,7 @@ async def main():
             await scrape_mvp(page)
         except Exception as exc:
             print(f"  FAILED MVP: {exc}")
-
+await debug_mvp_events_page(page)
         await browser.close()
 
     total = len(calendar.events)
@@ -256,4 +256,47 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
+async def debug_mvp_events_page(page):
+    print("\n-- DEBUG: MVP Event Info Page --")
+    url = "https://mvp.clubautomation.com/calendar/event-info?id=1070097&style=1&isFrame=2"
+    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    await page.wait_for_timeout(5000)
+
+    # Print full HTML
+    html = await page.content()
+    print(f"  FULL HTML:\n{html[:5000]}")
+
+    # Print all unique class names
+    all_classes = await page.evaluate("""
+        () => {
+            const classes = new Set();
+            document.querySelectorAll('*').forEach(el => {
+                el.classList.forEach(c => classes.add(c));
+            });
+            return Array.from(classes);
+        }
+    """)
+    print(f"  All classes: {all_classes}")
+
+    # Print text of every element that might contain a date or time
+    date_time_texts = await page.evaluate("""
+        () => {
+            const results = [];
+            document.querySelectorAll('*').forEach(el => {
+                const text = el.innerText?.trim();
+                if (text && (
+                    text.match(/\d{1,2}:\d{2}/) ||
+                    text.match(/AM|PM/i) ||
+                    text.match(/Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/i) ||
+                    text.match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/i)
+                ) && text.length < 200) {
+                    results.push({ tag: el.tagName, class: el.className, text });
+                }
+            });
+            return results.slice(0, 50);
+        }
+    """)
+    print(f"  Date/time elements found:")
+    for el in date_time_texts:
+        print(f"    <{el['tag']} class='{el['class']}'> {el['text']}")
 
