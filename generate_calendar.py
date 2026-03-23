@@ -5,8 +5,8 @@ from ics import Calendar, Event
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-COURTRESERVE_ORG_NAMES = {"9314":"All In BC", "16119": "DnD"}
-COURTRESERVE_ORGS = ["9314", "16119"]
+COURTRESERVE_ORG_NAMES = {"9314":"All In BC", "16119": "DnD", "13717": "FP"}
+COURTRESERVE_ORGS = ["9314", "16119", "13717"]
 MVP_URL = "https://mvp.clubautomation.com/calendar/event-info?id=1070097&style=1&isFrame=2"
 LOCAL_TZ = ZoneInfo("America/New_York")
 
